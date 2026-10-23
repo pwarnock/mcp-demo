@@ -4,16 +4,19 @@ import { SEED_ENVIRONMENTS } from './environments.js';
 import { createServer } from './server.js';
 import type { StateStore } from './store.js';
 import { TASKS_EXTENSION } from './tasks.js';
+import { TokenCollector } from './token-flow.js';
 import { connectModern, tempStore } from './test-helpers.js';
 import { deployRelease } from './tools.js';
 
 const KEY = new Uint8Array(32).fill(7);
 let store: StateStore;
+let tokens: TokenCollector;
+let delivered: string[];
 let cleanup: () => Promise<void>;
 let open: Array<() => Promise<void>> = [];
 
 const connect = async (opts: Parameters<typeof connectModern>[1] = {}, key: Uint8Array = KEY) => {
-  const { client, close } = await connectModern(() => createServer({ store, stepDelayMs: 0, requestStateKey: key }), opts);
+  const { client, close } = await connectModern(() => createServer({ store, stepDelayMs: 0, requestStateKey: key, tokens, urlWaitMs: 150 }), opts);
   open.push(close);
   return client;
 };
@@ -24,19 +27,22 @@ const accept = { action: 'accept' as const, content: { confirm: true } };
 
 beforeEach(async () => {
   ({ store, cleanup } = await tempStore(2));
+  delivered = [];
+  tokens = new TokenCollector({ sink: async (secret) => void delivered.push(secret) });
   open = [];
 });
 afterEach(async () => {
   for (const close of open) await close();
+  await tokens.close();
   await cleanup();
 });
 
 describe('tools/list', () => {
-  it('shows three tools with the declared annotations', async () => {
+  it('shows four tools with the declared annotations', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((t) => [t.name, t.annotations ?? {}]));
-    expect(Object.keys(byName).sort()).toEqual(['deploy_release', 'list_environments', 'rollback_release']);
+    expect(Object.keys(byName).sort()).toEqual(['deploy_release', 'list_environments', 'rollback_release', 'set_registry_token']);
     expect(byName.list_environments).toMatchObject({ readOnlyHint: true });
     expect(byName.deploy_release).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
     expect(byName.rollback_release).toMatchObject({ destructiveHint: true });
@@ -82,14 +88,14 @@ describe('deploy_release', () => {
   const ctxWith = (extensions: object) => ({ mcpReq: { envelope: { 'io.modelcontextprotocol/clientCapabilities': { extensions } } } });
 
   it('a request that declares other extensions but not tasks gets an isError result and no task', () => {
-    const result = deployRelease({ store, stepDelayMs: 0, requestStateKey: KEY }, good as never, ctxWith({ 'other/ext': {} }));
+    const result = deployRelease({ store, stepDelayMs: 0 }, good as never, ctxWith({ 'other/ext': {} }));
     expect(isError(result)).toBe(true);
     expect(result).not.toHaveProperty('resultType');
     expect(store.activeTaskCount()).toBe(0);
   });
 
   it('a tasks-capable request gets a task result and a stored task', async () => {
-    const result = deployRelease({ store, stepDelayMs: 0, requestStateKey: KEY }, good as never, ctxWith({ [TASKS_EXTENSION]: {} }));
+    const result = deployRelease({ store, stepDelayMs: 0 }, good as never, ctxWith({ [TASKS_EXTENSION]: {} }));
     expect(result).toMatchObject({ resultType: 'task', status: 'working' });
     const id = (result as { taskId: string }).taskId;
     expect(store.getTask(id)).toBeDefined();
@@ -97,7 +103,7 @@ describe('deploy_release', () => {
   });
 
   it('answers isError instead of a task when too many deploys are running', async () => {
-    const deps = { store, stepDelayMs: 0, requestStateKey: KEY };
+    const deps = { store, stepDelayMs: 0 };
     const ctx = ctxWith({ [TASKS_EXTENSION]: {} });
     const production = { ...good, environment: 'production' }; // parks at input_required, so the two stay active
     const ids = [deployRelease(deps, production as never, ctx), deployRelease(deps, production as never, ctx)].map((r) => (r as { taskId: string }).taskId);
@@ -208,5 +214,108 @@ describe('rollback_release', () => {
       expect(isError(await client.callTool({ name: 'rollback_release', arguments: args }))).toBe(true);
     }
     expect(version()).toBe('1.3.0');
+  });
+});
+
+describe('set_registry_token (URL-mode elicitation)', () => {
+  const TOKEN = 'tok_live_0123456789abcdef';
+  type Reply = { action: 'accept' | 'decline' | 'cancel' };
+  const submit = async (url: string) => {
+    expect((await fetch(url)).status).toBe(200);
+    const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: TOKEN }) });
+    expect(res.status).toBe(200);
+  };
+  const ask = (client: Client) =>
+    client.callTool({ name: 'set_registry_token', arguments: {} }, { allowInputRequired: true } as never) as unknown as Promise<Record<string, any>>;
+  const retry = (client: Client, requestState: string, reply: Reply = { action: 'accept' }, name = 'set_registry_token') =>
+    client.callTool({ name, arguments: {}, inputResponses: { open_link: reply }, requestState } as never, { allowInputRequired: true } as never) as unknown as Promise<Record<string, any>>;
+
+  it('the first call returns a URL-mode request for a loopback page and a sealed requestState, and stores nothing', async () => {
+    const client = await connect({ onElicit: () => accept });
+    const first = await ask(client);
+    expect(first.resultType).toBe('input_required');
+    expect(first.inputRequests.open_link.params).toMatchObject({ mode: 'url', url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/connect\/[A-Za-z0-9_-]{43}$/) });
+    expect(typeof first.requestState).toBe('string');
+    expect(JSON.stringify(first)).not.toContain(TOKEN);
+    expect(tokens.isConfigured()).toBe(false);
+  });
+
+  it('after the user submits the page, the tool reports the token saved without ever showing it', async () => {
+    const seen: string[] = [];
+    const client = await connect({
+      onElicit: async (req) => {
+        seen.push(req.message, req.url ?? '');
+        await submit(req.url as string);
+        return { action: 'accept' };
+      },
+    });
+    const result = await client.callTool({ name: 'set_registry_token', arguments: {} });
+    expect(isError(result)).toBe(false);
+    expect(text(result)).toBe('Registry token saved. It was not shown to the model.');
+    expect(tokens.isConfigured()).toBe(true);
+    expect(delivered).toEqual([TOKEN]);
+    expect([...seen, JSON.stringify(result)].join(' ')).not.toContain(TOKEN);
+  });
+
+  it.each<[string, Reply]>([
+    ['declined', { action: 'decline' }],
+    ['cancelled', { action: 'cancel' }],
+  ])('a %s request stores nothing and kills the link', async (_name, reply) => {
+    let link = '';
+    const client = await connect({ onElicit: (req) => { link = req.url as string; return reply; } });
+    const result = await client.callTool({ name: 'set_registry_token', arguments: {} });
+    expect(text(result)).toBe('Cancelled. No token was stored.');
+    expect(tokens.isConfigured()).toBe(false);
+    expect((await fetch(link)).status).toBe(404);
+  });
+
+  it('accepting without submitting the page times out and kills the link', async () => {
+    let link = '';
+    const client = await connect({ onElicit: (req) => { link = req.url as string; return accept; } });
+    const result = await client.callTool({ name: 'set_registry_token', arguments: {} });
+    expect(isError(result)).toBe(true);
+    expect(text(result)).toBe('Timed out waiting for the token page to be submitted.');
+    expect((await fetch(link)).status).toBe(404);
+    expect(tokens.isConfigured()).toBe(false);
+  });
+
+  it('a client that only declares form elicitation is refused before any link is opened', async () => {
+    const client = await connect({ onElicit: () => accept, elicitationModes: ['form'] });
+    const result = await client.callTool({ name: 'set_registry_token', arguments: {} });
+    expect(isError(result)).toBe(true);
+    expect(text(result)).toBe('set_registry_token needs a client that supports URL-mode elicitation.');
+    expect(tokens.activeFlowCount()).toBe(0);
+  });
+
+  it('a tampered requestState is refused with -32602 and stores nothing', async () => {
+    const client = await connect({ onElicit: () => accept });
+    const first = await ask(client);
+    const state = first.requestState as string;
+    await expect(retry(client, `${state.slice(0, -4)}AAAA`)).rejects.toMatchObject({ code: -32602 });
+    expect(tokens.isConfigured()).toBe(false);
+  });
+
+  it('a requestState from rollback_release cannot continue a token flow', async () => {
+    const client = await connect({ onElicit: () => accept });
+    const rollbackState = ((await client.callTool({ name: 'rollback_release', arguments: rollbackArgs }, { allowInputRequired: true } as never)) as unknown as { requestState: string }).requestState;
+    const result = await retry(client, rollbackState);
+    expect(result.resultType).toBe('input_required');
+    expect(tokens.isConfigured()).toBe(false);
+  });
+
+  it('a flow that no longer exists is replaced by a fresh link instead of failing', async () => {
+    const client = await connect({ onElicit: () => accept });
+    const first = await ask(client);
+    await tokens.close();
+    const again = await retry(client, first.requestState);
+    expect(again.resultType).toBe('input_required');
+    expect(again.inputRequests.open_link.params.url).not.toBe(first.inputRequests.open_link.params.url);
+  });
+
+  it('is listed with honest annotations and no input fields', async () => {
+    const client = await connect();
+    const tool = (await client.listTools()).tools.find((t) => t.name === 'set_registry_token');
+    expect(tool?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(isError(await client.callTool({ name: 'set_registry_token', arguments: { token: TOKEN } }))).toBe(true);
   });
 });
