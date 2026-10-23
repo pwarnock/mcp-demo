@@ -27,7 +27,7 @@ bun run test
 claude mcp add release-manager -- bun <path-to-repo>/src/main.ts
 ```
 
-Then start `claude` and try the steps below. This is what the design expects; in Claude Code, a deploy showing up in `/tasks` and a production deploy pausing at the approval dialog have been confirmed; the rest is still being checked (see `docs/superpowers/spikes/2026-10-23-stage1-claude-code-run.md`), so treat each step as a check, not a promise:
+Then start `claude` and try the steps below. This is what the design expects; in Claude Code, a deploy showing up in `/tasks`, a production deploy pausing at the approval dialog, and accepting or declining it have been confirmed; the rest is still being checked (see `docs/superpowers/spikes/2026-10-23-stage1-claude-code-run.md`), so treat each step as a check, not a promise:
 
 1. "List the environments." (`list_environments`)
 2. "Deploy web 2.0.0 to staging." The deploy shows up in `/tasks` and completes with no questions.
