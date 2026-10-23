@@ -168,7 +168,8 @@ function reply(res: ServerResponse, status: number, body: string, close = false)
     'content-type': body.startsWith('<!doctype') ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8',
     'cache-control': 'no-store',
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-    'referrer-policy': 'no-referrer',
+    // 'same-origin', not 'no-referrer': with no-referrer a browser sends `Origin: null` on the form POST, which handle() refuses.
+    'referrer-policy': 'same-origin',
     'x-content-type-options': 'nosniff',
     ...(close ? { connection: 'close' } : {}),
   });

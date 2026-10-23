@@ -49,12 +49,13 @@ describe('TokenCollector', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
     expect(res.headers.get('content-security-policy')).toContain("form-action 'self'");
-    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    // Not 'no-referrer': browsers then send `Origin: null` on the same-origin form POST, which the server (rightly) refuses.
+    expect(res.headers.get('referrer-policy')).toBe('same-origin');
   });
 
   it('a valid POST stores the token, completes the flow, and never echoes it', async () => {
     const { url, flowId } = await tokens.start();
-    const res = await post(url, form(TOKEN));
+    const res = await post(url, form(TOKEN), { origin: new URL(url).origin, 'sec-fetch-site': 'same-origin' });
     const body = await res.text();
     expect(res.status).toBe(200);
     expect(body).not.toContain(TOKEN);
@@ -85,7 +86,7 @@ describe('TokenCollector', () => {
 
   it('a cross-origin POST is refused and stores nothing', async () => {
     const { url } = await tokens.start();
-    const attacks: Array<Record<string, string>> = [{ origin: 'http://evil.example' }, { 'sec-fetch-site': 'cross-site' }];
+    const attacks: Array<Record<string, string>> = [{ origin: 'http://evil.example' }, { origin: 'null' }, { 'sec-fetch-site': 'cross-site' }];
     for (const headers of attacks) {
       expect((await post(url, form(TOKEN), headers)).status).toBe(403);
     }
