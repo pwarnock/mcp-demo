@@ -47,6 +47,17 @@ const TaskId = z.string().min(1).max(128).regex(/^[\x21-\x7e]+$/);
 const GetParams = z.object({ taskId: TaskId }).passthrough();
 const AnyResult = z.object({}).passthrough();
 
+/** Runs a handler body; anything but a protocol error is logged and replaced by a generic -32603. */
+function guarded<T>(method: string, body: () => T): T {
+  try {
+    return body();
+  } catch (err) {
+    if (err instanceof ProtocolError) throw err;
+    console.error(`[${method}] failed:`, err instanceof Error ? err.message : 'unknown error');
+    throw new ProtocolError(ProtocolErrorCode.InternalError, 'Internal error');
+  }
+}
+
 /** Advertises the extension and serves `tasks/get`, `tasks/update` and `tasks/cancel` on the SDK's custom-handler path. */
 export function registerTasksExtension(
   mcp: McpServer,
@@ -59,18 +70,18 @@ export function registerTasksExtension(
     if (task === undefined) throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Unknown task');
     return task;
   };
-  mcp.server.setRequestHandler('tasks/get', { params: GetParams, result: AnyResult }, async ({ taskId }) => toGetTaskResult(find(taskId)));
+  mcp.server.setRequestHandler('tasks/get', { params: GetParams, result: AnyResult }, async ({ taskId }) => guarded('tasks/get', () => toGetTaskResult(find(taskId))));
   // The SDK lifts `inputResponses` out of the params into ctx.mcpReq.inputResponses (untrusted client data).
   mcp.server.setRequestHandler('tasks/update', { params: GetParams, result: AnyResult }, async ({ taskId }, ctx) => {
     const inputResponses = ctx.mcpReq.inputResponses;
     if (inputResponses !== undefined && Object.keys(inputResponses).length > MAX_INPUT_KEYS) {
       throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Too many inputResponses');
     }
-    deps.onUpdate(find(taskId), inputResponses);
+    guarded('tasks/update', () => deps.onUpdate(find(taskId), inputResponses));
     return {};
   });
   mcp.server.setRequestHandler('tasks/cancel', { params: GetParams, result: AnyResult }, async ({ taskId }) => {
-    deps.onCancel(find(taskId));
+    guarded('tasks/cancel', () => deps.onCancel(find(taskId)));
     return {};
   });
 }

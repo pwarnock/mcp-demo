@@ -32,7 +32,11 @@ export function startDeploy(store: StateStore, req: DeployRequest, opts: { stepD
   const task = store.createTask({ statusMessage: `Step 1 of ${STEPS.length}: ${STEPS[0]}` });
   void run(store, task.taskId, req, opts.stepDelayMs).catch((err: unknown) => {
     console.error('[deploy] unexpected failure', err instanceof Error ? err.message : 'unknown error');
-    store.updateTask(task.taskId, { status: 'failed', error: { code: -32603, message: 'Deployment failed' } });
+    try {
+      store.updateTask(task.taskId, { status: 'failed', error: { code: -32603, message: 'Deployment failed' } });
+    } catch (again) {
+      console.error('[deploy] could not record the failure', again instanceof Error ? again.message : 'unknown error');
+    }
   });
   return task;
 }

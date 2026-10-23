@@ -81,6 +81,13 @@ describe('deploy_release', () => {
 
   const ctxWith = (extensions: object) => ({ mcpReq: { envelope: { 'io.modelcontextprotocol/clientCapabilities': { extensions } } } });
 
+  it('a request that declares other extensions but not tasks gets an isError result and no task', () => {
+    const result = deployRelease({ store, stepDelayMs: 0, requestStateKey: KEY }, good as never, ctxWith({ 'other/ext': {} }));
+    expect(isError(result)).toBe(true);
+    expect(result).not.toHaveProperty('resultType');
+    expect(store.activeTaskCount()).toBe(0);
+  });
+
   it('a tasks-capable request gets a task result and a stored task', async () => {
     const result = deployRelease({ store, stepDelayMs: 0, requestStateKey: KEY }, good as never, ctxWith({ [TASKS_EXTENSION]: {} }));
     expect(result).toMatchObject({ resultType: 'task', status: 'working' });
@@ -169,6 +176,30 @@ describe('rollback_release', () => {
     const result = (await client.callTool({ name: 'rollback_release', arguments: rollbackArgs, inputResponses: { confirm: accept } } as never, { allowInputRequired: true } as never)) as unknown as Record<string, unknown>;
     expect(result.resultType).toBe('input_required');
     expect(version()).toBe('1.3.0');
+  });
+
+  it('a storage failure is logged to stderr and the client gets a generic message without paths', async () => {
+    const client = await connect({ onElicit: () => accept });
+    vi.spyOn(store, 'setVersion').mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device, open /secret/path/state.json.1.tmp');
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await client.callTool({ name: 'rollback_release', arguments: rollbackArgs });
+    expect(isError(result)).toBe(true);
+    expect(text(result)).toBe('Rollback failed.');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('rollback_release'), expect.stringContaining('/secret/path'));
+    log.mockRestore();
+  });
+
+  it('a replayed requestState with the same arguments is accepted within its lifetime and only repeats the confirmed rollback', async () => {
+    const client = await connect({ onElicit: () => accept });
+    const state = await firstState(client, rollbackArgs);
+    for (let i = 0; i < 2; i++) {
+      const result = await retry(client, rollbackArgs, state);
+      expect(text(result)).toBe('Rolled back web in production to 1.2.0');
+    }
+    expect(version()).toBe('1.2.0');
+    expect(store.getEnvironments().production.api).toBe('1.3.0');
   });
 
   it('rejects an unknown service, a bad version and unknown fields', async () => {

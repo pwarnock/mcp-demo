@@ -104,6 +104,18 @@ describe('tasks handlers', () => {
     expect(result).toMatchObject({ taskId: task.taskId, status: 'working', statusMessage: 'hello', ttlMs: 3_600_000 });
   });
 
+  it.each(['tasks/get', 'tasks/update', 'tasks/cancel'])('%s hides a storage failure behind a generic -32603', async (method) => {
+    vi.spyOn(store, 'getTask').mockImplementation(() => {
+      throw new Error('EACCES: permission denied, open /secret/path/state.json.1.tmp');
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failure = await call(method, { taskId: 'abc' }).catch((e: unknown) => e as { code: number; message: string });
+    expect(failure).toMatchObject({ code: -32603, message: 'Internal error' });
+    expect(JSON.stringify(failure)).not.toContain('/secret');
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
   it.each(['tasks/get', 'tasks/update', 'tasks/cancel'])('%s with an unknown taskId yields -32602', async (method) => {
     await expect(call(method, { taskId: 'does-not-exist' })).rejects.toMatchObject({ code: -32602 });
   });

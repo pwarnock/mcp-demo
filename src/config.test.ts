@@ -1,3 +1,4 @@
+import { isAbsolute, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from './config.js';
 
@@ -6,7 +7,9 @@ const hex = 'ab'.repeat(32);
 describe('loadConfig', () => {
   it('uses documented defaults and generates a key when none is set', () => {
     const cfg = loadConfig({});
-    expect(cfg).toMatchObject({ statePath: '.state/state.json', stepDelayMs: 1500, keyGenerated: true });
+    expect(cfg).toMatchObject({ stepDelayMs: 1500, keyGenerated: true });
+    expect(isAbsolute(cfg.statePath)).toBe(true);
+    expect(cfg.statePath.endsWith(join('.state', 'state.json'))).toBe(true);
     expect(cfg.requestStateKey).toHaveLength(32);
   });
 

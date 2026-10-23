@@ -85,27 +85,32 @@ export function registerTools(mcp: McpServer, deps: ServerDeps, codec: RequestSt
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
     },
     async (args: RollbackArgs, ctx) => {
-      if (!knowsService(deps.store, args.environment, args.service)) return fail(`Unknown service: ${args.service}`);
-      const state = ctx.mcpReq.requestState<RollbackState>();
-      const bound = state?.service === args.service && state.environment === args.environment && state.toVersion === args.toVersion;
-      const answer = bound ? ConfirmAnswer.safeParse(ctx.mcpReq.inputResponses?.confirm) : undefined;
-      if (answer?.success) {
-        const reply = answer.data;
-        if (reply.action === 'accept' && reply.content.confirm) {
-          deps.store.setVersion(args.environment, args.service, args.toVersion);
-          return text(`Rolled back ${args.service} in ${args.environment} to ${args.toVersion}`);
+      try {
+        if (!knowsService(deps.store, args.environment, args.service)) return fail(`Unknown service: ${args.service}`);
+        const state = ctx.mcpReq.requestState<RollbackState>();
+        const bound = state?.service === args.service && state.environment === args.environment && state.toVersion === args.toVersion;
+        const answer = bound ? ConfirmAnswer.safeParse(ctx.mcpReq.inputResponses?.confirm) : undefined;
+        if (answer?.success) {
+          const reply = answer.data;
+          if (reply.action === 'accept' && reply.content.confirm) {
+            deps.store.setVersion(args.environment, args.service, args.toVersion);
+            return text(`Rolled back ${args.service} in ${args.environment} to ${args.toVersion}`);
+          }
+          return text('Rollback cancelled. Nothing was changed.');
         }
-        return text('Rollback cancelled. Nothing was changed.');
+        return inputRequired({
+          requestState: await codec.mint({ service: args.service, environment: args.environment, toVersion: args.toVersion }),
+          inputRequests: {
+            confirm: inputRequired.elicit({
+              message: `Roll back ${args.service} in ${args.environment} to ${args.toVersion}?`,
+              requestedSchema: ConfirmSchema,
+            }),
+          },
+        });
+      } catch (err) {
+        console.error('[rollback_release] failed:', err instanceof Error ? err.message : 'unknown error');
+        return fail('Rollback failed.');
       }
-      return inputRequired({
-        requestState: await codec.mint({ service: args.service, environment: args.environment, toVersion: args.toVersion }),
-        inputRequests: {
-          confirm: inputRequired.elicit({
-            message: `Roll back ${args.service} in ${args.environment} to ${args.toVersion}?`,
-            requestedSchema: ConfirmSchema,
-          }),
-        },
-      });
     },
   );
 }

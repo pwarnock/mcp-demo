@@ -103,6 +103,15 @@ describe('cancelDeploy', () => {
     expect(store.getEnvironments().staging.web).toBe('1.3.2');
   });
 
+  it('a cancel during the final rollout step stops the version from being written', async () => {
+    const task = startDeploy(store, staging, { stepDelayMs: 60 });
+    await vi.waitFor(() => expect(store.getTask(task.taskId)?.statusMessage).toBe('Step 4 of 4: rollout'));
+    cancelDeploy(store, task.taskId);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(status(task.taskId)).toBe('cancelled');
+    expect(store.getEnvironments().staging.web).toBe('1.3.2');
+  });
+
   it('cancels a deploy that is waiting for approval', async () => {
     const task = startDeploy(store, production, { stepDelayMs: 0 });
     await reach(task.taskId, 'input_required');
@@ -116,5 +125,23 @@ describe('cancelDeploy', () => {
     await reach(task.taskId, 'completed');
     cancelDeploy(store, task.taskId);
     expect(status(task.taskId)).toBe('completed');
+  });
+});
+
+describe('startDeploy when storage fails', () => {
+  it('logs the failure and does not leave an unhandled rejection', async () => {
+    const broken = {
+      createTask: () => ({ taskId: 't', status: 'working' }),
+      getTask: () => ({ status: 'working' }),
+      updateTask: () => {
+        throw new Error('EIO: i/o error, open /secret/path/state.json');
+      },
+      setVersion: () => {},
+    } as unknown as StateStore;
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    startDeploy(broken, staging, { stepDelayMs: 0 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
   });
 });

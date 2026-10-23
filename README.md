@@ -27,7 +27,7 @@ bun run test
 claude mcp add release-manager -- bun <path-to-repo>/src/main.ts
 ```
 
-Then start `claude` and try:
+Then start `claude` and try the steps below. This is what the design expects; the interactive run in Claude Code has not been recorded yet (see `docs/superpowers/spikes/2026-10-23-stage1-claude-code-run.md`), so treat each step as a check, not a promise:
 
 1. "List the environments." (`list_environments`)
 2. "Deploy web 2.0.0 to staging." The deploy shows up in `/tasks` and completes with no questions.
@@ -48,7 +48,7 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 
 | Variable | Default | Meaning |
 | - | - | - |
-| `STATE_PATH` | `.state/state.json` | Where versions and tasks are stored. |
+| `STATE_PATH` | `.state/state.json` next to this repo's `src/` | Where versions and tasks are stored. The default does not depend on the directory Claude Code was started in. |
 | `REQUEST_STATE_KEY` | random per process | 64 hex characters. Seals the rollback confirmation state; set it if confirmations must survive a restart. |
 | `STEP_DELAY_MS` | `1500` | Pause between simulated deploy steps (a test knob). |
 
@@ -59,11 +59,11 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 | Every tool input is a strict Zod schema with patterns and length limits; unknown fields are rejected. | `src/tools.ts`, `src/environments.ts` |
 | Tools carry honest `readOnlyHint` / `destructiveHint` annotations. | `src/tools.ts` |
 | Production deploys and rollbacks need a human answer before anything changes. | `src/deploy.ts`, `src/tools.ts` |
-| Multi-round-trip `requestState` is HMAC-sealed and bound to the request arguments; tampered or foreign state is refused with `-32602`. | `src/server.ts`, `src/tools.ts` |
+| Multi-round-trip `requestState` is HMAC-sealed; tampered, truncated or foreign-key state is refused with `-32602`. State minted for different arguments cannot confirm a rollback (it asks again). A valid state for the same arguments can be replayed within its 10-minute lifetime; it carries no authority, the user's answer does. | `src/server.ts`, `src/tools.ts` |
 | Client-supplied task ids never index a plain object (`__proto__` cannot resolve); versions are validated before they are written. | `src/store.ts` |
 | A task is returned only to a client that declared the tasks extension. | `src/tasks.ts`, `src/tools.ts` |
-| Running tasks are capped (8), tasks expire after an hour, and tasks interrupted by a restart are reported `failed`, not left `working`. | `src/store.ts` |
-| stdout carries protocol messages only; diagnostics go to stderr and never include secrets. | `src/main.ts`, `tests/stdio.e2e.test.ts` |
+| Running tasks are capped (8). Finished tasks are dropped about an hour after they finish, when the server next starts or the task is next polled. Tasks interrupted by a restart are reported `failed`, not left `working`. | `src/store.ts` |
+| stdout carries protocol messages only; diagnostics go to stderr, and clients get generic error text instead of internal messages or file paths. | `src/main.ts`, `src/tools.ts`, `src/tasks.ts`, `tests/stdio.e2e.test.ts` |
 | State file writes are atomic (temp file then rename) and private (mode 0600). | `src/store.ts` |
 
 ## Layout
@@ -72,5 +72,6 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 
 ## Known limits
 
-- Single process, single state file; not a deployment system.
+- One server process per state file. Two Claude Code sessions share the default file, and the second to start marks the first one's running tasks `failed`; set a different `STATE_PATH` per session.
+- Not a deployment system.
 - No authentication: stdio servers take their credentials from the environment (see the design doc for why OAuth is stage 2).
