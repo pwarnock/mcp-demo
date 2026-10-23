@@ -97,3 +97,32 @@ describe('StateStore', () => {
     expect(await readdir(dir)).toEqual(['state.json']);
   });
 });
+
+describe('StateStore with hostile keys', () => {
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])('getTask(%j) is unknown, not an inherited object', (id) => {
+    expect(open().getTask(id)).toBeUndefined();
+  });
+
+  it('updateTask on __proto__ throws and never touches Object.prototype', () => {
+    const store = open();
+    expect(() => store.updateTask('__proto__', { status: 'completed' })).toThrow('Unknown task');
+    expect(({} as { status?: string }).status).toBeUndefined();
+  });
+
+  it('setVersion refuses unknown environments and invalid service names', () => {
+    const store = open();
+    expect(() => store.setVersion('__proto__' as never, 'web', '1.0.0')).toThrow();
+    expect(() => store.setVersion('qa' as never, 'web', '1.0.0')).toThrow();
+    expect(() => store.setVersion('staging', '__proto__', '1.0.0')).toThrow();
+    expect(() => store.setVersion('staging', 'web', 'not-a-version')).toThrow();
+    expect(({} as { web?: string }).web).toBeUndefined();
+    expect(store.getEnvironments()).toEqual(SEED_ENVIRONMENTS);
+  });
+
+  it('a state file with a __proto__ task key loads without polluting anything', async () => {
+    await writeFile(path, '{"environments":' + JSON.stringify(SEED_ENVIRONMENTS) + ',"tasks":{"__proto__":{"status":"completed","polluted":true}}}');
+    const store = open();
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+    expect(store.activeTaskCount()).toBe(0);
+  });
+});

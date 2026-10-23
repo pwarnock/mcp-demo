@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { type EnvironmentName, type Environments, SEED_ENVIRONMENTS } from './environments.js';
+import { type EnvironmentName, type Environments, SEED_ENVIRONMENTS, SERVICE_PATTERN, VERSION_PATTERN } from './environments.js';
 
 export type TaskStatus = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
 
@@ -25,9 +25,10 @@ export class TooManyTasksError extends Error {
   }
 }
 
-interface StateFile {
+interface State {
   environments: Environments;
-  tasks: Record<string, TaskRecord>;
+  /** A Map, not a plain object: task ids come from clients, and `tasks['__proto__']` must not resolve. */
+  tasks: Map<string, TaskRecord>;
 }
 
 const TERMINAL: readonly TaskStatus[] = ['completed', 'failed', 'cancelled'];
@@ -39,7 +40,7 @@ export class StateStore {
   private readonly path: string;
   private readonly maxActiveTasks: number;
   private readonly now: () => number;
-  private state: StateFile;
+  private state: State;
 
   constructor(opts: { path: string; maxActiveTasks: number; now?: () => number }) {
     this.path = opts.path;
@@ -56,6 +57,9 @@ export class StateStore {
   }
 
   setVersion(env: EnvironmentName, service: string, version: string): void {
+    if (!Object.hasOwn(this.state.environments, env)) throw new Error('Unknown environment');
+    if (!SERVICE_PATTERN.test(service)) throw new Error('Invalid service name');
+    if (!VERSION_PATTERN.test(version)) throw new Error('Invalid version');
     this.state.environments[env][service] = version;
     this.save();
   }
@@ -73,16 +77,16 @@ export class StateStore {
       pollIntervalMs: DEFAULT_POLL_MS,
       ...(init.statusMessage === undefined ? {} : { statusMessage: init.statusMessage }),
     };
-    this.state.tasks[task.taskId] = task;
+    this.state.tasks.set(task.taskId, task);
     this.save();
     return structuredClone(task);
   }
 
   getTask(taskId: string): TaskRecord | undefined {
-    const task = this.state.tasks[taskId];
+    const task = this.state.tasks.get(taskId);
     if (task === undefined) return undefined;
     if (this.isExpired(task)) {
-      delete this.state.tasks[taskId];
+      this.state.tasks.delete(taskId);
       this.save();
       return undefined;
     }
@@ -90,7 +94,7 @@ export class StateStore {
   }
 
   updateTask(taskId: string, patch: Partial<Omit<TaskRecord, 'taskId' | 'createdAt'>>): TaskRecord {
-    const task = this.state.tasks[taskId];
+    const task = this.state.tasks.get(taskId);
     if (task === undefined) throw new Error('Unknown task');
     if (TERMINAL.includes(task.status)) return structuredClone(task);
     Object.assign(task, patch, { lastUpdatedAt: this.stamp() });
@@ -99,7 +103,7 @@ export class StateStore {
   }
 
   activeTaskCount(): number {
-    return Object.values(this.state.tasks).filter((t) => ACTIVE.includes(t.status)).length;
+    return [...this.state.tasks.values()].filter((t) => ACTIVE.includes(t.status)).length;
   }
 
   private stamp(): string {
@@ -111,27 +115,27 @@ export class StateStore {
     return this.now() - Date.parse(task.lastUpdatedAt) > task.ttlMs;
   }
 
-  private load(): StateFile {
+  private load(): State {
     let raw: string;
     try {
       raw = readFileSync(this.path, 'utf8');
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { environments: structuredClone(SEED_ENVIRONMENTS), tasks: {} };
+        return { environments: structuredClone(SEED_ENVIRONMENTS), tasks: new Map() };
       }
       throw new Error('State file could not be read');
     }
     try {
-      const parsed = JSON.parse(raw) as StateFile;
+      const parsed = JSON.parse(raw) as { environments?: Environments; tasks?: Record<string, TaskRecord> };
       if (typeof parsed !== 'object' || parsed === null || !parsed.environments || !parsed.tasks) throw new Error('shape');
-      return parsed;
+      return { environments: parsed.environments, tasks: new Map(Object.entries(parsed.tasks)) };
     } catch {
       throw new Error('State file is corrupt');
     }
   }
 
   private recover(): void {
-    for (const task of Object.values(this.state.tasks)) {
+    for (const task of this.state.tasks.values()) {
       if (!ACTIVE.includes(task.status)) continue;
       task.status = 'failed';
       task.error = { code: -32603, message: 'Server restarted before the task finished' };
@@ -141,15 +145,15 @@ export class StateStore {
   }
 
   private purgeExpired(): void {
-    for (const [id, task] of Object.entries(this.state.tasks)) {
-      if (this.isExpired(task)) delete this.state.tasks[id];
+    for (const [id, task] of this.state.tasks) {
+      if (this.isExpired(task)) this.state.tasks.delete(id);
     }
   }
 
   private save(): void {
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.state), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ environments: this.state.environments, tasks: Object.fromEntries(this.state.tasks) }), { mode: 0o600 });
     renameSync(tmp, this.path);
   }
 }
