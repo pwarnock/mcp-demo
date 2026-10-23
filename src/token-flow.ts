@@ -76,6 +76,11 @@ export class TokenCollector {
     if (flow !== undefined) this.forget(flow);
   }
 
+  /** Links that are open and not yet submitted, cancelled or expired. */
+  activeFlowCount(): number {
+    return [...this.byId.values()].filter((f) => !f.stored && Date.now() <= f.expiresAt).length;
+  }
+
   isConfigured(): boolean {
     return this.token !== undefined;
   }

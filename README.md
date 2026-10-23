@@ -32,7 +32,8 @@ Then start `claude` and try the steps below. This is what the design expects; in
 1. "List the environments." (`list_environments`)
 2. "Deploy web 2.0.0 to staging." The deploy shows up in `/tasks` and completes with no questions.
 3. "Deploy web 2.0.0 to production." The task moves to `input_required`; close `/tasks` and answer the approval dialog. Decline it and the task ends `cancelled`.
-4. "Roll web in production back to 1.2.0." A confirmation dialog appears; nothing changes until you accept.
+4. "Set the registry token." Claude Code should show the full URL and ask before opening it. Paste any made-up value on the page (it is never shown back or saved). Not yet observed in Claude Code; see the run notes.
+5. "Roll web in production back to 1.2.0." A confirmation dialog appears; nothing changes until you accept.
 
 ## Tools
 
@@ -41,6 +42,7 @@ Then start `claude` and try the steps below. This is what the design expects; in
 | `list_environments` | Read-only list of service versions per environment. | `readOnlyHint` |
 | `deploy_release` | Returns a task, runs four simulated steps, pauses for approval before the production rollout. | Tasks, elicitation inside a task |
 | `rollback_release` | Destructive. Returns an `input_required` result asking for confirmation, and acts only on the retried call. | Elicitation outside a task |
+| `set_registry_token` | Asks you to open a one-time page on this machine and paste a registry token there. The token goes to the server, not through Claude Code or the model, and is kept in memory only. | URL-mode elicitation |
 
 Services are `web` and `api`; environments are `dev`, `staging` and `production`. Nothing real is deployed. State (versions and tasks) is kept in a JSON file.
 
@@ -64,6 +66,7 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 | A task is returned only to a client that declared the tasks extension. | `src/tasks.ts`, `src/tools.ts` |
 | Running tasks are capped (8). Finished tasks are dropped about an hour after they finish, when the server next starts or the task is next polled. Tasks interrupted by a restart are reported `failed`, not left `working`. | `src/store.ts` |
 | stdout carries protocol messages only; diagnostics go to stderr, and clients get generic error text instead of internal messages or file paths. | `src/main.ts`, `src/tools.ts`, `src/tasks.ts`, `tests/stdio.e2e.test.ts` |
+| The token page binds to `127.0.0.1` on a random port, uses a random one-time link that expires after 5 minutes, refuses any Host header but its own (DNS rebinding) and cross-origin posts, caps the body at 8 KB, sends `no-store` and a locked-down CSP, and never echoes, logs, returns or persists the token. | `src/token-flow.ts` |
 | State file writes are atomic (temp file then rename) and private (mode 0600). | `src/store.ts` |
 
 ## Layout
@@ -73,5 +76,6 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 ## Known limits
 
 - One server process per state file. Two Claude Code sessions share the default file, and the second to start marks the first one's running tasks `failed`; set a different `STATE_PATH` per session.
+- The token page's "same user" protection is only as strong as the local machine: the one-time link is the only binding, because a stdio server has no web identity. The spec's phishing guidance (verify who opens the URL) needs real sign-in, which is stage 2.
 - Not a deployment system.
 - No authentication: stdio servers take their credentials from the environment (see the design doc for why OAuth is stage 2).

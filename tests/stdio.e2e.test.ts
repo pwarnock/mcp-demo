@@ -35,12 +35,12 @@ class Wire {
     this.child.stderr.on('data', (d: Buffer) => this.stderr.push(d.toString()));
   }
 
-  request(method: string, params: Json = {}, tasks = true): Promise<Json> {
+  request(method: string, params: Json = {}, tasks = true, extraCaps: Json = {}): Promise<Json> {
     const id = this.nextId++;
     const meta = {
       'io.modelcontextprotocol/protocolVersion': '2026-07-28',
       'io.modelcontextprotocol/clientInfo': { name: 'e2e', version: '0' },
-      'io.modelcontextprotocol/clientCapabilities': tasks ? { extensions: { 'io.modelcontextprotocol/tasks': {} } } : {},
+      'io.modelcontextprotocol/clientCapabilities': { ...(tasks ? { extensions: { 'io.modelcontextprotocol/tasks': {} } } : {}), ...extraCaps },
     };
     const reply = new Promise<Json>((resolve, reject) => {
       this.pending.set(id, resolve);
@@ -108,6 +108,25 @@ describe('stdio server', () => {
     expect(waiting.inputRequests.approve).toMatchObject({ method: 'elicitation/create', params: { mode: 'form' } });
     await w.request('tasks/update', { taskId, inputResponses: { approve: { action: 'accept', content: { approve: true } } } });
     await reach(w, taskId, 'completed');
+  });
+
+  it('set_registry_token sends a URL-mode request over the wire and finishes once the page is submitted, never exposing the token', async () => {
+    const TOKEN = 'tok_live_e2e_0123456789';
+    const w = start();
+    const caps = { elicitation: { form: {}, url: {} } };
+    const call = (extra: Json = {}) => w.request('tools/call', { name: 'set_registry_token', arguments: {}, ...extra }, true, caps);
+    const first = (await call()).result;
+    expect(first.resultType).toBe('input_required');
+    const link = first.inputRequests.open_link;
+    expect(link).toMatchObject({ method: 'elicitation/create', params: { mode: 'url', url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/connect\//) } });
+    expect(typeof first.requestState).toBe('string');
+    const page = await fetch(link.params.url);
+    expect(page.status).toBe(200);
+    const saved = await fetch(link.params.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: TOKEN }) });
+    expect(saved.status).toBe(200);
+    const done = (await call({ inputResponses: { open_link: { action: 'accept' } }, requestState: first.requestState })).result;
+    expect(done.content[0].text).toBe('Registry token saved for this session. It was not shown to the model or written to disk.');
+    expect([...w.stdout, ...w.stderr].join('\n')).not.toContain(TOKEN);
   });
 
   it('an unknown taskId yields -32602 over the wire', async () => {

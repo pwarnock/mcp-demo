@@ -1,13 +1,13 @@
 import { McpServer, createRequestStateCodec } from '@modelcontextprotocol/server';
 import { answerApproval, cancelDeploy } from './deploy.js';
-import { type RollbackState, type ServerDeps, registerTools } from './tools.js';
+import { type ServerDeps, type ToolState, registerTools } from './tools.js';
 import { registerTasksExtension } from './tasks.js';
 
 export type { ServerDeps } from './tools.js';
 
 /** Builds one release-manager server. `serveStdio` calls this per connection; state lives in `deps.store`. */
 export function createServer(deps: ServerDeps): McpServer {
-  const codec = createRequestStateCodec<RollbackState>({ key: deps.requestStateKey });
+  const codec = createRequestStateCodec<ToolState>({ key: deps.requestStateKey });
   const mcp = new McpServer(
     { name: 'release-manager', version: '0.1.0' },
     { capabilities: { tools: {} }, requestState: { verify: codec.verify } },
