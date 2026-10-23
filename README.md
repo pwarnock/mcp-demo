@@ -32,7 +32,7 @@ Then start `claude` and try the steps below. This is what the design expects; in
 1. "List the environments." (`list_environments`)
 2. "Deploy web 2.0.0 to staging." The deploy shows up in `/tasks` and completes with no questions.
 3. "Deploy web 2.0.0 to production." The task moves to `input_required`; close `/tasks` and answer the approval dialog. Decline it and the task ends `cancelled`.
-4. "Set the registry token." Claude Code should show the full URL and ask before opening it. Paste any made-up value on the page (it is never shown back or saved). Not yet observed in Claude Code; see the run notes.
+4. "Set the registry token." Claude Code should show the full URL and ask before opening it. Paste any made-up value on the page; it is sent to the secure service (by default a built-in fake vault) and never shown back. Not yet observed in Claude Code; see the run notes.
 5. "Roll web in production back to 1.2.0." A confirmation dialog appears; nothing changes until you accept.
 
 ## Tools
@@ -42,9 +42,21 @@ Then start `claude` and try the steps below. This is what the design expects; in
 | `list_environments` | Read-only list of service versions per environment. | `readOnlyHint` |
 | `deploy_release` | Returns a task, runs four simulated steps, pauses for approval before the production rollout. | Tasks, elicitation inside a task |
 | `rollback_release` | Destructive. Returns an `input_required` result asking for confirmation, and acts only on the retried call. | Elicitation outside a task |
-| `set_registry_token` | Asks you to open a one-time page on this machine and paste a registry token there. The token goes to the server, not through Claude Code or the model, and is kept in memory only. | URL-mode elicitation |
+| `set_registry_token` | Asks you to open a one-time page on this machine and paste a registry token there. The page's handler sends the token straight to a secure service and keeps no copy; Claude Code and the model never see it. | URL-mode elicitation |
 
 Services are `web` and `api`; environments are `dev`, `staging` and `production`. Nothing real is deployed. State (versions and tasks) is kept in a JSON file.
+
+### Watch the token arrive
+
+By default the server starts a fake vault inside its own process and logs `[fake-vault] stored "registry-token" (N chars)` to stderr. To see it in a terminal of its own:
+
+```bash
+bun run vault        # in one terminal: listens on 127.0.0.1:8787, bearer token demo-vault-token
+claude mcp remove release-manager
+claude mcp add release-manager -e SECRET_SINK_URL=http://127.0.0.1:8787/secrets -e SECRET_SINK_AUTH=demo-vault-token -- bun <path-to-repo>/src/main.ts
+```
+
+Then run "Set the registry token" and paste a made-up value. The vault terminal prints the name and length only; nothing prints the value.
 
 ## Configuration
 
@@ -53,6 +65,8 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 | `STATE_PATH` | `.state/state.json` next to this repo's `src/` | Where versions and tasks are stored. The default does not depend on the directory Claude Code was started in. |
 | `REQUEST_STATE_KEY` | random per process | 64 hex characters. Seals the rollback confirmation state; set it if confirmations must survive a restart. |
 | `STEP_DELAY_MS` | `1500` | Pause between simulated deploy steps (a test knob). |
+| `SECRET_SINK_URL` | built-in fake vault | Where the token page sends the secret: an `https` URL, or `http` on loopback only. |
+| `SECRET_SINK_AUTH` | none | Bearer token sent to the secure service. Never logged. |
 
 ## Security practices, and where to read them
 
@@ -66,7 +80,8 @@ Services are `web` and `api`; environments are `dev`, `staging` and `production`
 | A task is returned only to a client that declared the tasks extension. | `src/tasks.ts`, `src/tools.ts` |
 | Running tasks are capped (8). Finished tasks are dropped about an hour after they finish, when the server next starts or the task is next polled. Tasks interrupted by a restart are reported `failed`, not left `working`. | `src/store.ts` |
 | stdout carries protocol messages only; diagnostics go to stderr, and clients get generic error text instead of internal messages or file paths. | `src/main.ts`, `src/tools.ts`, `src/tasks.ts`, `tests/stdio.e2e.test.ts` |
-| The token page binds to `127.0.0.1` on a random port, uses a random one-time link that expires after 5 minutes, refuses any Host header but its own (DNS rebinding) and cross-origin posts, caps the body at 8 KB, sends `no-store` and a locked-down CSP, and never echoes, logs, returns or persists the token. | `src/token-flow.ts` |
+| The token page binds to `127.0.0.1` on a random port, uses a random one-time link that expires after 5 minutes, refuses any Host header but its own (DNS rebinding) and cross-origin posts, caps the body at 8 KB, and sends `no-store` and a locked-down CSP. Its handler passes the token to an injected sink and keeps no copy; a failing sink gives a generic 502 and the link stays usable. | `src/token-flow.ts` |
+| The sink POSTs to the secure service over https (or loopback http), never follows a redirect with the secret in the body, times out, and its errors never include the secret or the response. The fake vault never returns a stored value. | `src/secret-sink.ts`, `src/fake-vault.ts` |
 | State file writes are atomic (temp file then rename) and private (mode 0600). | `src/store.ts` |
 
 ## Layout

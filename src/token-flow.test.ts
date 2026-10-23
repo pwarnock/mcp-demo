@@ -4,13 +4,30 @@ import { TokenCollector } from './token-flow.js';
 
 const TOKEN = 'tok_live_0123456789abcdef';
 let tokens: TokenCollector;
+let received: string[];
+let sinkFails: boolean;
+const sink = async (token: string) => {
+  if (sinkFails) throw new Error(`vault unreachable while sending ${token}`);
+  received.push(token);
+};
 beforeEach(() => {
-  tokens = new TokenCollector({ flowTtlMs: 60_000 });
+  received = [];
+  sinkFails = false;
+  tokens = new TokenCollector({ sink, flowTtlMs: 60_000 });
 });
 afterEach(async () => {
   vi.restoreAllMocks();
   await tokens.close();
 });
+
+/** True if `needle` is held anywhere reachable from `root` (own properties, Maps, Sets, arrays). */
+function holds(root: unknown, needle: string, seen = new Set<unknown>()): boolean {
+  if (typeof root === 'string') return root.includes(needle);
+  if (typeof root !== 'object' || root === null || seen.has(root)) return false;
+  seen.add(root);
+  const children: unknown[] = root instanceof Map ? [...root.keys(), ...root.values()] : root instanceof Set ? [...root] : Object.values(root);
+  return children.some((c) => holds(c, needle, seen));
+}
 
 const form = (token: string) => new URLSearchParams({ token }).toString();
 const post = (url: string, body: string, headers: Record<string, string> = {}) =>
@@ -61,6 +78,37 @@ describe('TokenCollector', () => {
     expect(body).not.toContain(TOKEN);
     expect(await tokens.wait(flowId, { timeoutMs: 1000 })).toBe('stored');
     expect(tokens.isConfigured()).toBe(true);
+    expect(received).toEqual([TOKEN]);
+  });
+
+  it('hands the token to the sink and keeps no copy of it', async () => {
+    const { url } = await tokens.start();
+    await post(url, form(TOKEN));
+    expect(received).toEqual([TOKEN]);
+    expect(holds(tokens, TOKEN)).toBe(false);
+  });
+
+  it('a failing sink gives a generic 502, leaks nothing, and the same link can be tried again', async () => {
+    const { url, flowId } = await tokens.start();
+    sinkFails = true;
+    const failed = await post(url, form(TOKEN));
+    const body = await failed.text();
+    expect(failed.status).toBe(502);
+    expect(body).not.toContain(TOKEN);
+    expect(body).not.toContain('vault unreachable');
+    expect(tokens.isConfigured()).toBe(false);
+    sinkFails = false;
+    expect((await post(url, form(TOKEN))).status).toBe(200);
+    expect(await tokens.wait(flowId, { timeoutMs: 1000 })).toBe('stored');
+    expect(received).toEqual([TOKEN]);
+  });
+
+  it('a failing sink does not log the token or the sink error message', async () => {
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    const { url } = await tokens.start();
+    sinkFails = true;
+    await post(url, form(TOKEN));
+    expect(spies.flatMap((x) => x.mock.calls).flat().join(' ')).not.toContain(TOKEN);
   });
 
   it('the link works once: a second POST is refused and the stored token is kept', async () => {
@@ -91,6 +139,7 @@ describe('TokenCollector', () => {
       expect((await post(url, form(TOKEN), headers)).status).toBe(403);
     }
     expect(tokens.isConfigured()).toBe(false);
+    expect(received).toEqual([]);
   });
 
   it('refuses the wrong content type, an empty token, an oversized body and an oversized token', async () => {
@@ -100,6 +149,7 @@ describe('TokenCollector', () => {
     expect((await post(url, `token=${'a'.repeat(20_000)}`)).status).toBe(413);
     expect((await post(url, form('a'.repeat(4097)))).status).toBe(400);
     expect(tokens.isConfigured()).toBe(false);
+    expect(received).toEqual([]);
   });
 
   it('only GET and POST are served', async () => {
@@ -111,7 +161,7 @@ describe('TokenCollector', () => {
   it('an expired link is refused, and waiting on it times out', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      const short = new TokenCollector({ flowTtlMs: 1000 });
+      const short = new TokenCollector({ sink, flowTtlMs: 1000 });
       const { url, flowId } = await short.start();
       vi.setSystemTime(Date.now() + 2000);
       expect((await post(url, form(TOKEN))).status).toBe(410);
@@ -142,6 +192,7 @@ describe('TokenCollector', () => {
     tokens.cancel(flowId);
     expect((await post(url, form(TOKEN))).status).toBe(404);
     expect(tokens.isConfigured()).toBe(false);
+    expect(received).toEqual([]);
   });
 
   it('never writes the token to the console', async () => {

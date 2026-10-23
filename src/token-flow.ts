@@ -12,14 +12,19 @@ interface Flow {
   nonce: string;
   expiresAt: number;
   stored: boolean;
+  /** True while the sink is being called, so a second submit cannot race the first. */
+  sending: boolean;
   waiters: Set<() => void>;
 }
+
+/** Receives the secret the moment the page is submitted, e.g. to forward it to a secure service. Must not log it. */
+export type SecretSink = (secret: string) => Promise<void>;
 
 export type WaitResult = 'stored' | 'timeout' | 'unknown';
 
 /**
  * Collects one secret through a one-time page on 127.0.0.1, so it never passes through the MCP client or the model.
- * The secret is held in memory only; nothing here returns, logs or persists it.
+ * The page hands the secret to the injected sink and keeps no copy; nothing here returns, logs or persists it.
  */
 export class TokenCollector {
   private readonly flowTtlMs: number;
@@ -27,9 +32,11 @@ export class TokenCollector {
   private readonly byId = new Map<string, Flow>();
   private server: Server | undefined;
   private listening: Promise<number> | undefined;
-  private token: string | undefined;
+  private readonly sink: SecretSink;
+  private delivered = false;
 
-  constructor(opts: { flowTtlMs?: number } = {}) {
+  constructor(opts: { sink: SecretSink; flowTtlMs?: number }) {
+    this.sink = opts.sink;
     this.flowTtlMs = opts.flowTtlMs ?? DEFAULT_FLOW_TTL_MS;
   }
 
@@ -41,6 +48,7 @@ export class TokenCollector {
       nonce: randomBytes(32).toString('base64url'),
       expiresAt: Date.now() + this.flowTtlMs,
       stored: false,
+      sending: false,
       waiters: new Set(),
     };
     this.byNonce.set(flow.nonce, flow);
@@ -81,8 +89,9 @@ export class TokenCollector {
     return [...this.byId.values()].filter((f) => !f.stored && Date.now() <= f.expiresAt).length;
   }
 
+  /** True once a secret has been handed to the sink. The secret itself is not kept. */
   isConfigured(): boolean {
-    return this.token !== undefined;
+    return this.delivered;
   }
 
   async close(): Promise<void> {
@@ -122,6 +131,24 @@ export class TokenCollector {
     return this.listening;
   }
 
+  private async deliver(flow: Flow, token: string, res: ServerResponse): Promise<void> {
+    if (flow.sending) return reply(res, 409, 'Already submitting');
+    flow.sending = true;
+    try {
+      await this.sink(token);
+    } catch {
+      flow.sending = false;
+      console.error('[token-page] the secret sink failed; the link can be used again');
+      return reply(res, 502, FAILED_PAGE);
+    }
+    flow.sending = false;
+    flow.stored = true;
+    this.delivered = true;
+    this.byNonce.delete(flow.nonce); // single use
+    for (const wake of [...flow.waiters]) wake();
+    reply(res, 200, DONE_PAGE);
+  }
+
   private handle(req: IncomingMessage, res: ServerResponse): void {
     const port = (this.server?.address() as AddressInfo | null)?.port;
     if (req.headers.host !== `127.0.0.1:${port}`) return reply(res, 403, 'Forbidden');
@@ -147,15 +174,12 @@ export class TokenCollector {
       if (body === undefined) return reply(res, 413, 'Too large', true);
       const token = new URLSearchParams(body).get('token') ?? '';
       if (token.length === 0 || token.length > MAX_TOKEN_CHARS) return reply(res, 400, 'Invalid token');
-      this.token = token;
-      flow.stored = true;
-      this.byNonce.delete(flow.nonce); // single use
-      for (const wake of [...flow.waiters]) wake();
-      reply(res, 200, DONE_PAGE);
+      void this.deliver(flow, token, res);
     });
   }
 }
 
+const FAILED_PAGE = '<!doctype html><meta charset="utf-8"><title>Not saved</title><p>The token could not be saved. Go back and try again, or ask for a new link.</p>';
 const FORM_PAGE = `<!doctype html><meta charset="utf-8"><title>Release manager: registry token</title>
 <style>body{font:16px system-ui;max-width:32rem;margin:3rem auto;padding:0 1rem}input,button{font:inherit;padding:.5rem;width:100%;margin:.5rem 0}</style>
 <h1>Registry token</h1>

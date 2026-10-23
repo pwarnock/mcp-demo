@@ -11,6 +11,7 @@ import { deployRelease } from './tools.js';
 const KEY = new Uint8Array(32).fill(7);
 let store: StateStore;
 let tokens: TokenCollector;
+let delivered: string[];
 let cleanup: () => Promise<void>;
 let open: Array<() => Promise<void>> = [];
 
@@ -26,7 +27,8 @@ const accept = { action: 'accept' as const, content: { confirm: true } };
 
 beforeEach(async () => {
   ({ store, cleanup } = await tempStore(2));
-  tokens = new TokenCollector();
+  delivered = [];
+  tokens = new TokenCollector({ sink: async (secret) => void delivered.push(secret) });
   open = [];
 });
 afterEach(async () => {
@@ -249,8 +251,9 @@ describe('set_registry_token (URL-mode elicitation)', () => {
     });
     const result = await client.callTool({ name: 'set_registry_token', arguments: {} });
     expect(isError(result)).toBe(false);
-    expect(text(result)).toBe('Registry token saved for this session. It was not shown to the model or written to disk.');
+    expect(text(result)).toBe('Registry token saved. It was not shown to the model.');
     expect(tokens.isConfigured()).toBe(true);
+    expect(delivered).toEqual([TOKEN]);
     expect([...seen, JSON.stringify(result)].join(' ')).not.toContain(TOKEN);
   });
 

@@ -151,7 +151,7 @@ export function registerTools(mcp: McpServer, deps: ServerDeps, codec: RequestSt
           }
           if (answer.success) {
             const outcome = await deps.tokens.wait(flowId, { timeoutMs: deps.urlWaitMs, signal: ctx.mcpReq.signal });
-            if (outcome === 'stored') return text('Registry token saved for this session. It was not shown to the model or written to disk.');
+            if (outcome === 'stored') return text('Registry token saved. It was not shown to the model.');
             if (outcome === 'timeout') {
               deps.tokens.cancel(flowId);
               return fail('Timed out waiting for the token page to be submitted.');

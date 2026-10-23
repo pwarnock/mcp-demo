@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type FakeVault, startFakeVault } from '../src/fake-vault.js';
 
 type Json = Record<string, any>;
 
@@ -15,9 +16,9 @@ class Wire {
   private nextId = 1;
   private buf = '';
 
-  constructor(statePath: string) {
+  constructor(statePath: string, extraEnv: Record<string, string> = {}) {
     this.child = spawn('bun', ['src/main.ts'], {
-      env: { ...process.env, STATE_PATH: statePath, STEP_DELAY_MS: '0', REQUEST_STATE_KEY: 'ab'.repeat(32) },
+      env: { ...process.env, STATE_PATH: statePath, STEP_DELAY_MS: '0', REQUEST_STATE_KEY: 'ab'.repeat(32), ...extraEnv },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child.stdout.on('data', (d: Buffer) => {
@@ -68,8 +69,8 @@ afterEach(async () => {
   await Promise.all(wires.map((w) => w.stop()));
   await rm(dir, { recursive: true, force: true });
 });
-const start = () => {
-  const w = new Wire(statePath);
+const start = (extraEnv: Record<string, string> = {}) => {
+  const w = new Wire(statePath, extraEnv);
   wires.push(w);
   return w;
 };
@@ -112,7 +113,8 @@ describe('stdio server', () => {
 
   it('set_registry_token sends a URL-mode request over the wire and finishes once the page is submitted, never exposing the token', async () => {
     const TOKEN = 'tok_live_e2e_0123456789';
-    const w = start();
+    const vault: FakeVault = await startFakeVault({ authToken: 'e2e-vault-auth' });
+    const w = start({ SECRET_SINK_URL: `${vault.url}/secrets`, SECRET_SINK_AUTH: 'e2e-vault-auth' });
     const caps = { elicitation: { form: {}, url: {} } };
     const call = (extra: Json = {}) => w.request('tools/call', { name: 'set_registry_token', arguments: {}, ...extra }, true, caps);
     const first = (await call()).result;
@@ -125,8 +127,27 @@ describe('stdio server', () => {
     const saved = await fetch(link.params.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: TOKEN }) });
     expect(saved.status).toBe(200);
     const done = (await call({ inputResponses: { open_link: { action: 'accept' } }, requestState: first.requestState })).result;
-    expect(done.content[0].text).toBe('Registry token saved for this session. It was not shown to the model or written to disk.');
+    expect(done.content[0].text).toBe('Registry token saved. It was not shown to the model.');
+    expect(vault.stored()).toEqual([{ name: 'registry-token', length: TOKEN.length }]);
     expect([...w.stdout, ...w.stderr].join('\n')).not.toContain(TOKEN);
+    await vault.close();
+  });
+
+  it('without SECRET_SINK_URL the built-in fake vault receives the token and only its length is logged', async () => {
+    const TOKEN = 'tok_live_default_vault_0123';
+    const w = start();
+    const caps = { elicitation: { form: {}, url: {} } };
+    const call = (extra: Json = {}) => w.request('tools/call', { name: 'set_registry_token', arguments: {}, ...extra }, true, caps);
+    const first = (await call()).result;
+    const url = first.inputRequests.open_link.params.url as string;
+    const saved = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: TOKEN }) });
+    expect(saved.status).toBe(200);
+    const done = (await call({ inputResponses: { open_link: { action: 'accept' } }, requestState: first.requestState })).result;
+    expect(done.content[0].text).toBe('Registry token saved. It was not shown to the model.');
+    const log = w.stderr.join('');
+    expect(log).toContain('[fake-vault] stored "registry-token" (27 chars)');
+    expect(log).not.toContain(TOKEN);
+    expect(w.stdout.join('')).not.toContain(TOKEN);
   });
 
   it('an unknown taskId yields -32602 over the wire', async () => {

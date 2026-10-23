@@ -34,6 +34,23 @@ describe('loadConfig', () => {
     if (bad.length > 0) expect(message).not.toContain(bad);
   });
 
+  it('has no secret sink by default and reads SECRET_SINK_URL and SECRET_SINK_AUTH', () => {
+    expect(loadConfig({})).toMatchObject({ secretSinkUrl: undefined, secretSinkAuth: undefined });
+    expect(loadConfig({ SECRET_SINK_URL: 'https://vault.example.com/v1/secrets', SECRET_SINK_AUTH: 'abc' })).toMatchObject({
+      secretSinkUrl: 'https://vault.example.com/v1/secrets',
+      secretSinkAuth: 'abc',
+    });
+  });
+
+  it('rejects an unsafe SECRET_SINK_URL without echoing the auth value', () => {
+    expect(() => loadConfig({ SECRET_SINK_URL: 'http://vault.example.com/x', SECRET_SINK_AUTH: 'super-secret-auth' })).toThrow(/SECRET_SINK_URL/);
+    try {
+      loadConfig({ SECRET_SINK_URL: 'http://vault.example.com/x', SECRET_SINK_AUTH: 'super-secret-auth' });
+    } catch (e) {
+      expect(String(e)).not.toContain('super-secret-auth');
+    }
+  });
+
   it.each(['-1', 'abc', '1.5', '600001'])('rejects STEP_DELAY_MS %j', (bad) => {
     expect(() => loadConfig({ STEP_DELAY_MS: bad })).toThrow(/STEP_DELAY_MS/);
   });
