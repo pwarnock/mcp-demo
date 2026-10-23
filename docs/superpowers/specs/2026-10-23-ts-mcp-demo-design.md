@@ -45,7 +45,7 @@ A pretend release manager. Tools:
 | - | - | - |
 | `list_environments` | Read-only. Lists environments and what version each runs. | Baseline tool, `readOnlyHint` |
 | `deploy_release` | Returns a task immediately. Runs through a few simulated steps. For `production` it moves to `input_required` and asks a human to approve before the risky step. | Tasks, elicitation inside a task |
-| `rollback_release` | Synchronous, destructive. Asks for confirmation through a form before acting. | Direct elicitation, `destructiveHint` |
+| `rollback_release` | Synchronous, destructive. Returns an `input_required` result asking for confirmation through a form; acts only on the retried call. | Elicitation outside a task (multi-round-trip), `destructiveHint` |
 
 The scenario is Peter's; the exact tool set above is my proposal.
 
@@ -67,13 +67,13 @@ The scenario is Peter's; the exact tool set above is my proposal.
 
 - `oidc-provider` 9.13.0, run in a throwaway spike: `client_credentials` and authorization code + PKCE both return JWT access tokens with `aud` equal to the MCP server URL; an unknown resource is refused with `invalid_target`; discovery advertises S256 only; a public client without PKCE is rejected; the callback carries `iss` and discovery sets `authorization_response_iss_parameter_supported: true`. It requires explicit `RS256` signing config for JWT access tokens with its dev keys.
 - Spec text and Claude Code docs, read on 2026-10-23: claims about tasks, `localhost` token endpoints, `--callback-port`, `--client-id`, and the stdio rule come from there.
-- SDK 2.4.0 type declarations, read from the published package: `elicitInput` exists on the server; `ClientCredentialsProvider` exists on the client; `requireBearerAuth` and `mcpAuthMetadataRouter` exist in `@modelcontextprotocol/express` 2.0.2.
+- SDK 2.4.0 type declarations, read from the published package: `inputRequired`, `acceptedContent` and a `requestState` integrity hook exist on the server (`elicitInput` exists but throws on the 2026-07-28 era); `ClientCredentialsProvider` exists on the client; `requireBearerAuth` and `mcpAuthMetadataRouter` exist in `@modelcontextprotocol/express` 2.0.2.
 
 ## Risks and unknowns (resolve with a spike before the plan)
 
 1. **The SDK has no tasks runtime. This is the biggest risk.** The 2.4.0 typings say task methods are "2025-11-25 wire vocabulary with no SDK runtime": `tasks/get`, `tasks/update` and `tasks/cancel` are not on the typed method surface. The Claude Code tasks contract is a different, newer shape (`resultType: "task"`, `inputRequests`, `tasks/update`). The typings do mention an "era gate" that lets custom handlers register for the Tasks extension method names, so a hand-written implementation on the SDK's custom-handler path looks possible but is unproven. Options, in my order of preference: (a) implement the extension ourselves on the custom-handler path, which also teaches the most; (b) the third-party `mcp-durable-tasks` package (npm, 0.4.1, "server-side implementation of the MCP Tasks extension (SEP-2663)"), which I have not inspected. The spike must prove that a tool call can return `resultType: "task"` and that `tasks/get` / `tasks/update` / `tasks/cancel` can be served.
 2. **Task durability under stdio.** A resumed Claude Code session starts a new server process, and the docs say a task ID must stay answerable across connections. An in-memory store would lose tasks. The task store needs to persist to disk (file or `node:sqlite`; planner's choice).
-3. **Two elicitation paths.** Inside a task, input arrives through `inputRequests` and is answered with `tasks/update`. Outside a task (`rollback_release`), the server sends a normal elicitation request. I have not read the Claude Code docs section on responding to elicitation requests, so the exact behavior of the second path, and the capability check to use, is unverified.
+3. **Two elicitation paths, and neither is a server-to-client request.** The 2.4.0 typings say `elicitInput` is deprecated and "throws on a 2026-07-28-era request": that revision has no server-to-client request channel. Outside a task (`rollback_release`), the handler returns `inputRequired({ inputRequests: { confirm: inputRequired.elicit({ message, requestedSchema }) } })` (multi-round-trip); the client gathers the answer and retries the same `tools/call` with `inputResponses`, which the handler reads with `acceptedContent(ctx.mcpReq.inputResponses, 'confirm', schema)`. Inside a task, input arrives through the task's `inputRequests` and is answered with `tasks/update`. Unverified: whether Claude Code answers a plain `input_required` result on `tools/call` (its docs I read describe only the task form), and the capability check to use.
 4. **Non-interactive limits.** Per the docs, `claude -p` gets no tasks and cannot complete OAuth, and a task that needs input is cancelled in non-interactive sessions. The demo must be driven from an interactive session, and the README must say so.
 5. **Claude Code against `oidc-provider`.** Untested. The expected path is a pre-registered client, `http://localhost:<port>/callback`, and a plain-`http` `localhost` token endpoint, which the docs say is allowed.
 6. **The 2026-07-28 wire changes** (per-request client capabilities, `server/discover`) may change how the SDK's transports and the HTTP stage behave compared with the tutorial's 1.x code. The tutorial's TypeScript sample uses 1.x import paths and must not be copied.
@@ -89,6 +89,8 @@ Stage 1 (stdio):
 - Annotate tools (`readOnlyHint`, `destructiveHint`) honestly.
 - Require human confirmation (elicitation) before the production deploy step and before rollback.
 - Bound resources: task TTL, maximum concurrent tasks, maximum input sizes.
+- Integrity-protect any multi-round-trip `requestState` (HMAC via the SDK's `createRequestStateCodec`, wired into `ServerOptions.requestState`). The SDK's typings say it round-trips through the client, is attacker-controlled, and has no default verification.
+- Treat `inputResponses` and task `inputResponses` as untrusted input: validate against a schema before use.
 - Return generic errors to the client; keep detail in stderr.
 
 Stage 2 (HTTP + OAuth), from the MCP authorization spec and tutorial:
