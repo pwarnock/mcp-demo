@@ -1,6 +1,6 @@
 # Stage 1 Claude Code run (Task 8)
 
-Status: **automated smoke check done; interactive items b, c, d and e confirmed by Peter on 2026-10-23; a and f still pending.** The interactive items need a person in a Claude Code 2.1.304+ session (tasks are unavailable in `claude -p`), so they could not be run by the agent that built this.
+Status: **automated smoke check done; interactive items a, b, c, d and e confirmed by Peter on 2026-10-23; f still pending.** The interactive items need a person in a Claude Code 2.1.304+ session (tasks are unavailable in `claude -p`), so they could not be run by the agent that built this.
 
 ## Done: print-mode smoke check (Claude Code 2.1.309, 2026-10-23)
 
@@ -16,7 +16,7 @@ Add the server (`claude mcp add release-manager -- bun <path-to-repo>/src/main.t
 
 | # | Check | Result |
 | - | - | - |
-| a | `list_environments` works. | |
+| a | `list_environments` works. | Peter, 2026-10-23, Claude Code 2.1.309: ran `list_environments` in an interactive session (reported as run; output not described). |
 | b | A staging `deploy_release` appears in `/tasks` and completes. Does Claude Code accept the task result even though the SDK adds `"content": []` to it? | Peter, 2026-10-23, Claude Code 2.1.309: the task shows up in `/tasks`, so Claude Code accepts the task result even with the SDK-added `"content": []`. Completion was not reported. |
 | c | A production `deploy_release` pauses at `input_required`; close `/tasks` and the approval dialog appears. | Peter, 2026-10-23, Claude Code 2.1.309: the production deploy pauses and the approval dialog appears. This confirms elicitation inside a task. |
 | d | Declining the approval ends the task `cancelled`. | Peter, 2026-10-23, Claude Code 2.1.309: accepting the approval works and declining cancels the task (as reported: "accepting works, declining cancels"). |
