@@ -3,7 +3,7 @@
 A small MCP server, a pretend release manager, for learning three features of the 2026-07-28 MCP revision with the current TypeScript SDK (`@modelcontextprotocol/server` 2.4.0):
 
 - **MCP Tasks**: `deploy_release` returns a task handle immediately instead of blocking.
-- **Elicitation**: a production deploy pauses and asks you to approve; `rollback_release` asks you to confirm.
+- **Elicitation**: a production deploy pauses and asks you to approve; `rollback_release` asks you to confirm; `set_registry_token` uses URL mode so a secret never passes through the model.
 - **Secure server basics**: input validation, honest tool annotations, bounded resources, signed multi-round-trip state, stdout kept clean.
 
 This is **stage 1: stdio**. Stage 2 (Streamable HTTP with OAuth, interactive vs autonomous clients) is designed in `docs/superpowers/specs/2026-10-23-ts-mcp-demo-design.md` and not built yet. The earlier Python demo is archived at tag `archive/2026-10-23-copilot-cursor-demo`.
@@ -27,13 +27,7 @@ bun run test
 claude mcp add release-manager -- bun <path-to-repo>/src/main.ts
 ```
 
-Then start `claude` and try the steps below. This is what the design expects; in Claude Code, a deploy showing up in `/tasks`, a production deploy pausing at the approval dialog, accepting or declining it, and the rollback confirmation dialog have been confirmed; the rest is still being checked (see `docs/superpowers/spikes/2026-10-23-stage1-claude-code-run.md`), so treat each step as a check, not a promise:
-
-1. "List the environments." (`list_environments`)
-2. "Deploy web 2.0.0 to staging." The deploy shows up in `/tasks` and completes with no questions.
-3. "Deploy web 2.0.0 to production." The task moves to `input_required`; close `/tasks` and answer the approval dialog. Decline it and the task ends `cancelled`.
-4. "Set the registry token." Claude Code should show the full URL and ask before opening it. Paste any made-up value on the page; it is sent to the secure service (by default a built-in fake vault) and never shown back. Not yet observed in Claude Code; see the run notes.
-5. "Roll web in production back to 1.2.0." A confirmation dialog appears; nothing changes until you accept.
+Then follow the **[demo playbook](docs/DEMO.md)**: a scripted walkthrough with what you should see at each step, what has and has not been observed in Claude Code, troubleshooting and cleanup.
 
 ## Tools
 
@@ -45,18 +39,6 @@ Then start `claude` and try the steps below. This is what the design expects; in
 | `set_registry_token` | Asks you to open a one-time page on this machine and paste a registry token there. The page's handler sends the token straight to a secure service and keeps no copy; Claude Code and the model never see it. | URL-mode elicitation |
 
 Services are `web` and `api`; environments are `dev`, `staging` and `production`. Nothing real is deployed. State (versions and tasks) is kept in a JSON file.
-
-### Watch the token arrive
-
-By default the server starts a fake vault inside its own process and logs `[fake-vault] stored "registry-token" (N chars)` to stderr. To see it in a terminal of its own:
-
-```bash
-bun run vault        # in one terminal: listens on 127.0.0.1:8787, bearer token demo-vault-token
-claude mcp remove release-manager
-claude mcp add release-manager -e SECRET_SINK_URL=http://127.0.0.1:8787/secrets -e SECRET_SINK_AUTH=demo-vault-token -- bun <path-to-repo>/src/main.ts
-```
-
-Then run "Set the registry token" and paste a made-up value. The vault terminal prints the name and length only; nothing prints the value.
 
 ## Configuration
 
