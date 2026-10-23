@@ -8,7 +8,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "start": "bun src/main.ts"
+    "start": "bun src/main.ts",
+    "vault": "bun scripts/fake-vault.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.4.0",

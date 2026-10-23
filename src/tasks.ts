@@ -1,9 +1,9 @@
 import { type McpServer, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import { declaredCapabilities } from './capabilities.js';
 import type { StateStore, TaskRecord } from './store.js';
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
-const CLIENT_CAPABILITIES_KEY = 'io.modelcontextprotocol/clientCapabilities';
 const MAX_INPUT_KEYS = 16;
 
 type TaskFields = Pick<TaskRecord, 'taskId' | 'status' | 'statusMessage' | 'createdAt' | 'lastUpdatedAt' | 'ttlMs' | 'pollIntervalMs'>;
@@ -36,11 +36,8 @@ export function toGetTaskResult(t: TaskRecord): Record<string, unknown> {
 
 /** True when this request declared the tasks extension. Never return a task to a client that did not. */
 export function clientSupportsTasks(ctx: { mcpReq: { envelope?: object } }): boolean {
-  const caps = (ctx.mcpReq.envelope as Record<string, unknown> | undefined)?.[CLIENT_CAPABILITIES_KEY];
-  if (typeof caps !== 'object' || caps === null) return false;
-  const extensions = (caps as { extensions?: unknown }).extensions;
-  if (typeof extensions !== 'object' || extensions === null) return false;
-  return Object.hasOwn(extensions, TASKS_EXTENSION);
+  const extensions = declaredCapabilities(ctx).extensions;
+  return typeof extensions === 'object' && extensions !== null && Object.hasOwn(extensions, TASKS_EXTENSION);
 }
 
 const TaskId = z.string().min(1).max(128).regex(/^[\x21-\x7e]+$/);
