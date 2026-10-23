@@ -11,7 +11,7 @@ A scripted walkthrough of the release-manager server in Claude Code. Each act sa
 | Elicitation inside a task (form mode) | `deploy_release` to production | `src/deploy.ts` (`awaitApproval`) | Yes: approval dialog; accept completes, decline cancels |
 | Elicitation outside a task (form mode) | `rollback_release` | `src/tools.ts` | Yes: confirmation dialog |
 | Elicitation, URL mode, secret sent to a secure service | `set_registry_token` | `src/token-flow.ts`, `src/secret-sink.ts`, `src/fake-vault.ts` | Yes: the vault printed the name and length, never the value |
-| Restart recovery (an interrupted task reports `failed`) | `deploy_release` | `src/store.ts` | **Not observed.** Covered only by `tests/stdio.e2e.test.ts` |
+| Restart recovery (an interrupted task reports `failed`) | `deploy_release` | `src/store.ts` | **Not observed in Claude Code.** A `kill -9` restart over raw stdio (2026-10-23) and `tests/stdio.e2e.test.ts` both show `failed` |
 
 Details and dates of each observation are in `docs/superpowers/spikes/2026-10-23-stage1-claude-code-run.md`.
 
@@ -70,7 +70,7 @@ Start a fresh `claude` session and repeat Act 5. Terminal 1 should print `[fake-
 
 ### Act 6 (optional): restart recovery
 Say: "Deploy api 2.1.0 to staging", then quit Claude Code within about 15 seconds (with the default step delay the deploy is over in 6 seconds, so use the slow setting). Start `claude` again and open `/tasks`. The task should show `failed`, "Server restarted before the task finished", and staging api should not show 2.1.0.
-This has not been observed in Claude Code. The production approval dialog cannot be used for this, because it cannot be closed without answering it.
+This has not been observed in Claude Code; it was checked over raw stdio with a `kill -9` and a restart. The production approval dialog cannot be used for this, because it cannot be closed without answering it.
 
 ## Edges worth pointing out
 
